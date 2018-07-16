@@ -1,69 +1,12 @@
-#! /bin/sh
+#! /bin/bash
+
+set -e
 
 PATH="/sbin:$PATH"
 
-MY_IP_ADDR=`\
-    ifconfig \
-    | grep 'inet addr:' \
-    | awk 'NR == 1 {split($2, addr, ":"); print addr[2]}' \
-`
-
-OPEN_PORTS_TCP='
-    25
-    53
-    993
-    2525
-    22222
-'
-
-OPEN_PORTS_UDP='
-    53
-'
-
-# Restricted services:
-# 888   - fwlogwatch
-# 3000  - ntop
-# 5000  - ispwebadmin
-RESTRICTED_PORTS_TCP='
-    888
-    3000
-    5000
-'
-
-PRIVILEGED_HOST=''
-
-OFFENDERS='
-    74.10.145.55
-    74.212.253.146
-    74.92.122.81
-    85.185.84.98
-    92.27.58.145
-    195.228.135.138
-    196.214.133.90
-    201.23.70.82
-    208.115.212.88
-    212.154.6.176
-    14.222.48.115
-'
-
-NET_APNIC='
-    0.0.0.0/7
-    8.0.0.0/7
-    110.0.0.0/7
-    112.0.0.0/5
-    120.0.0.0/6
-    124.0.0.0/7
-    126.0.0.0/8
-    169.208.0.0/12
-    175.0.0.0/8
-    180.0.0.0/8
-    202.0.0.0/7
-    210.0.0.0/7
-    218.0.0.0/7
-    220.0.0.0/7
-    222.0.0.0/8
-'
-
+DIR_CFG="$HOME/etc/mypeetables"
+FILE_HOSTS_BLACKLIST="$DIR_CFG/hosts_blacklist"
+FILE_PORTS_OPEN="$DIR_CFG/ports_open"
 
 set_policy__accept() {
     iptables -P INPUT   ACCEPT
@@ -71,13 +14,11 @@ set_policy__accept() {
     iptables -P FORWARD ACCEPT
 }
 
-
 set_policy__drop() {
     iptables -P INPUT   DROP
     iptables -P OUTPUT  DROP
     iptables -P FORWARD DROP
 }
-
 
 flush() {
     iptables -F
@@ -90,30 +31,14 @@ flush() {
     set_policy__accept
 }
 
-
 drop_offenders() {
-    for offender in $OFFENDERS;
-    do
-        iptables -A INPUT -s $offender -j DROP
+    cat "$FILE_HOSTS_BLACKLIST" \
+    | grep -v '^#' \
+    | grep -v '^ *$' \
+    | while read addr; do
+        iptables -A INPUT -s "$addr" -j DROP
     done
 }
-
-
-drop_apnic() {
-    for net in $NET_APNIC;
-    do
-        iptables -A INPUT -s $net -j DROP
-    done
-}
-
-
-accept_restricted() {
-    for port in $RESTRICTED_PORTS_TCP;
-    do
-        iptables -A INPUT -s $PRIVILEGED_HOST -m state --state NEW -p tcp -m tcp --dport $port -j ACCEPT
-    done
-}
-
 
 accept() {
     # accept established connections
@@ -126,54 +51,54 @@ accept() {
     iptables -A OUTPUT -o lo -j ACCEPT
 
     # accept outgoing connections
-    iptables -A INPUT  -s $MY_IP_ADDR -m state --state NEW -j ACCEPT
+    iptables -A INPUT  -s $(hostname) -m state --state NEW -j ACCEPT
     iptables -A OUTPUT                -m state --state NEW -j ACCEPT
 
     # accept icmp
     iptables -A INPUT -p icmp -j ACCEPT
 
     # Services
-    for port in $OPEN_PORTS_TCP;
-    do
-        iptables -A INPUT -m state --state NEW -p tcp -m tcp --dport $port -j ACCEPT
+    cat "$FILE_PORTS_OPEN" \
+    | grep -v '^#' \
+    | grep -v '^ *$' \
+    | while read port protocol; do
+        iptables \
+            -A INPUT \
+            -m state \
+            --state NEW \
+            -p "$protocol" \
+            -m "$protocol" \
+            --dport "$port" \
+            -j ACCEPT
     done
 
-    for port in $OPEN_PORTS_UDP;
-    do
-        iptables -A INPUT -m state --state NEW -p udp -m udp --dport $port -j ACCEPT
-    done
+
 }
 
-
 reject() {
-    iptables -A INPUT   -j ULOG
-    iptables -A FORWARD -j ULOG
+    iptables -A INPUT   -j NFLOG
+    iptables -A FORWARD -j NFLOG
     iptables -A INPUT   -j REJECT --reject-with icmp-host-prohibited
     iptables -A FORWARD -j REJECT --reject-with icmp-host-prohibited
 }
-
 
 command_off() {
     flush
 }
 
-
 command_on() {
     flush
     set_policy__drop
     accept
-    drop_apnic
     drop_offenders
     reject
 }
 
-
 failwith() {
     error_msg="$1"
-    echo "$error_msg" 1>&2
+    echo "$error_msg" >&2
     exit 1
 }
-
 
 main() {
     command="$1"
@@ -183,6 +108,5 @@ main() {
     ;;  *     ) failwith "Unknown command: \"$command\""
     esac
 }
-
 
 main "$@"
